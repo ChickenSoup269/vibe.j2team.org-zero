@@ -12,7 +12,7 @@ watch(
   () => props.observeTarget,
   (target) => {
     observer?.disconnect()
-    if (!target) return
+    if (!target || typeof IntersectionObserver === 'undefined') return
 
     observer = new IntersectionObserver(
       (entries) => {
