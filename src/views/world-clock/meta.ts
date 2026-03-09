@@ -5,6 +5,7 @@ const meta: PageMeta = {
   description: 'Xem giờ hiện tại ở nhiều thành phố trên thế giới theo thời gian thực.',
   author: 'KingCong Studio',
   facebook: 'https://kingcongstudio.com',
+  category: 'tool',
 }
 
 export default meta
