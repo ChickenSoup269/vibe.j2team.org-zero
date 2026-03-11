@@ -1,15 +1,28 @@
 /* ========================================
    GAME ENGINE — Logic game chính
    ======================================== */
-import * as DATA from './data'
+import {
+  ACHIEVEMENTS,
+  getCareerLevel,
+  loadGameData,
+  type Achievement,
+  type ActiveSkill,
+  type Choice,
+  type GameDataJson,
+  type GameEvent,
+  type GameState,
+  type PassiveItem,
+  type Stats,
+} from './data'
 
 export class GameEngine {
-  state: DATA.GameState | null
+  state: GameState | null
   usedEvents: Set<string>
   MAX_AGE: number
   START_AGE: number
-  previousSnapshot: { state: DATA.GameState; usedEvents: Set<string> } | null
-  previewedEvent: DATA.GameEvent | null
+  previousSnapshot: { state: GameState; usedEvents: Set<string> } | null
+  previewedEvent: GameEvent | null
+  _data: GameDataJson | null
 
   constructor() {
     this.state = null
@@ -18,10 +31,17 @@ export class GameEngine {
     this.START_AGE = 22
     this.previousSnapshot = null
     this.previewedEvent = null
+    this._data = null
   }
 
-  newGame(name: string, careerId: string) {
-    const career = DATA.CAREERS[careerId]
+  async ensureData(): Promise<GameDataJson> {
+    if (!this._data) this._data = await loadGameData()
+    return this._data
+  }
+
+  async newGame(name: string, careerId: string) {
+    const data = await this.ensureData()
+    const career = data.careers[careerId]
     if (!career) return
     this.usedEvents = new Set()
     this.state = {
@@ -48,8 +68,8 @@ export class GameEngine {
     return this.state
   }
 
-  getNextEvent(): DATA.GameEvent | null {
-    if (!this.state || this.state.gameOver) return null
+  getNextEvent(): GameEvent | null {
+    if (!this.state || this.state.gameOver || !this._data) return null
 
     if (this.previewedEvent) {
       const event = this.previewedEvent
@@ -59,7 +79,7 @@ export class GameEngine {
 
     let event = null
 
-    const milestone = DATA.MILESTONE_EVENTS.find(
+    const milestone = this._data.milestoneEvents.find(
       (e) => e.triggerAge === this.state?.age && !this.usedEvents.has(e.id),
     )
     if (milestone) {
@@ -67,21 +87,21 @@ export class GameEngine {
     } else {
       const pool = []
 
-      for (const evt of DATA.COMMON_EVENTS) {
+      for (const evt of this._data.commonEvents) {
         if (this._isEventValid(evt)) {
           pool.push({ ...evt, source: 'common' })
         }
       }
 
-      const careerEvts = DATA.CAREER_EVENTS[this.state.careerId] || []
+      const careerEvts = this._data.careerEvents[this.state.careerId] || []
       for (const evt of careerEvts) {
         if (this._isEventValid(evt)) {
           pool.push({ ...evt, source: 'career' })
         }
       }
 
-      if (DATA.DANGEROUS_EVENTS && Math.random() < 0.1) {
-        for (const evt of DATA.DANGEROUS_EVENTS) {
+      if (this._data.dangerousEvents && Math.random() < 0.1) {
+        for (const evt of this._data.dangerousEvents) {
           if (this._isEventValid(evt)) {
             pool.push({ ...evt, source: 'dangerous' })
           }
@@ -112,7 +132,7 @@ export class GameEngine {
     return event ?? null
   }
 
-  applyChoice(choice: DATA.Choice) {
+  applyChoice(choice: Choice) {
     if (!this.state) return {}
 
     this.previousSnapshot = {
@@ -120,7 +140,7 @@ export class GameEngine {
       usedEvents: new Set(this.usedEvents),
     }
 
-    const resolvedEffects: Partial<Record<keyof DATA.Stats, number>> = {}
+    const resolvedEffects: Partial<Record<keyof Stats, number>> = {}
     let hasDoublePositive = false
     if (
       this.state?.activeBuffs &&
@@ -193,10 +213,10 @@ export class GameEngine {
   }
 
   _checkAchievements() {
-    const newlyUnlocked: DATA.Achievement[] = []
+    const newlyUnlocked: Achievement[] = []
     if (!this.state || this.state.gameOver) return newlyUnlocked
 
-    for (const ach of DATA.ACHIEVEMENTS) {
+    for (const ach of ACHIEVEMENTS) {
       if (!this.state.unlockedAchievements.includes(ach.id)) {
         if (ach.condition(this.state.stats, this)) {
           this.state.unlockedAchievements.push(ach.id)
@@ -211,7 +231,7 @@ export class GameEngine {
     return newlyUnlocked
   }
 
-  _isEventValid(evt: DATA.GameEvent) {
+  _isEventValid(evt: GameEvent) {
     if (this._isEventImmune(evt.id)) return false
     if (evt.oneTime && this.usedEvents.has(evt.id)) return false
     if (evt.minAge && this.state && this.state.age < evt.minAge) return false
@@ -220,7 +240,7 @@ export class GameEngine {
     return true
   }
 
-  _getFallbackEvent(): DATA.GameEvent {
+  _getFallbackEvent(): GameEvent {
     return {
       id: 'fallback_' + (this.state?.age || 0),
       type: '☀️ Ngày thường',
@@ -246,8 +266,8 @@ export class GameEngine {
   }
 
   _updateCareerLevel() {
-    if (!this.state) return
-    const level = DATA.getCareerLevel(this.state.careerId, this.state.stats.skill)
+    if (!this.state || !this._data) return
+    const level = getCareerLevel(this.state.careerId, this.state.stats.skill, this._data.careers)
     if (level && level.title !== this.state.currentLevel) {
       const oldLevel = this.state.currentLevel
       this.state.currentLevel = level.title
@@ -291,8 +311,9 @@ export class GameEngine {
     return null
   }
 
-  changeCareer(newCareerId: string) {
-    const career = DATA.CAREERS[newCareerId]
+  async changeCareer(newCareerId: string) {
+    const data = await this.ensureData()
+    const career = data.careers[newCareerId]
     if (!career || !this.state) return
     this.state.careerId = newCareerId
     this.state.careerName = career.name
@@ -345,9 +366,9 @@ export class GameEngine {
   }
 
   _applyItemPassiveEffects() {
-    if (!this.state || !this.state.inventory) return
+    if (!this.state || !this.state.inventory || !this._data) return
     for (const itemId of this.state.inventory) {
-      const item = DATA.PASSIVE_ITEMS.find((i) => i.id === itemId)
+      const item = this._data.passiveItems.find((i) => i.id === itemId)
       if (item && item.effect) {
         for (const [key, value] of Object.entries(item.effect)) {
           if (this.state.stats[key] !== undefined) {
@@ -378,9 +399,9 @@ export class GameEngine {
   }
 
   _isEventImmune(eventId: string) {
-    if (!this.state) return false
+    if (!this.state || !this._data) return false
     for (const itemId of this.state.inventory || []) {
-      const item = DATA.PASSIVE_ITEMS.find((i) => i.id === itemId)
+      const item = this._data.passiveItems.find((i) => i.id === itemId)
       if (item && item.immunity && item.immunity.includes(eventId)) return true
     }
     if (this.state.activeBuffs) {
@@ -407,9 +428,10 @@ export class GameEngine {
     return true
   }
 
-  buyItem(itemId: string) {
+  async buyItem(itemId: string) {
     if (!this.state) return { success: false, message: 'Game chưa bắt đầu' }
-    const item = DATA.PASSIVE_ITEMS.find((i: DATA.PassiveItem) => i.id === itemId)
+    const data = await this.ensureData()
+    const item = data.passiveItems.find((i: PassiveItem) => i.id === itemId)
     if (!item) return { success: false, message: 'Vật phẩm không tồn tại' }
     if (this.state.stats.money < item.cost) return { success: false, message: 'Không đủ tiền!' }
     if (this.state.inventory.includes(itemId))
@@ -421,9 +443,10 @@ export class GameEngine {
     return { success: true, message: `Bạn đã mua ${item.name}!` }
   }
 
-  buySkill(skillId: string) {
+  async buySkill(skillId: string) {
     if (!this.state) return { success: false, message: 'Game chưa bắt đầu' }
-    const skill = DATA.ACTIVE_SKILLS.find((s: DATA.ActiveSkill) => s.id === skillId)
+    const data = await this.ensureData()
+    const skill = data.activeSkills.find((s: ActiveSkill) => s.id === skillId)
     if (!skill) return { success: false, message: 'Kỹ năng không tồn tại' }
     if (this.state.stats.money < skill.cost) return { success: false, message: 'Không đủ tiền!' }
     if (this.state.activeSkills.includes(skillId))
@@ -436,9 +459,10 @@ export class GameEngine {
     return { success: true, message: `Đã mở khóa ${skill.name}!` }
   }
 
-  useSkill(skillId: string) {
+  async useSkill(skillId: string) {
     if (!this.state) return { success: false, message: 'Game chưa bắt đầu' }
-    const skill = DATA.ACTIVE_SKILLS.find((s) => s.id === skillId)
+    const data = await this.ensureData()
+    const skill = data.activeSkills.find((s) => s.id === skillId)
     if (!skill) return { success: false, message: 'Kỹ năng không tồn tại' }
     if (!this.state.activeSkills.includes(skillId))
       return { success: false, message: 'Bạn chưa mở khóa kỹ năng này' }
@@ -448,8 +472,8 @@ export class GameEngine {
 
     const result: {
       message?: string
-      previewEvent?: DATA.GameEvent | null
-      skill?: DATA.ActiveSkill
+      previewEvent?: GameEvent | null
+      skill?: ActiveSkill
       isPreview?: boolean
     } = {}
     switch (skill.effect) {
@@ -465,7 +489,7 @@ export class GameEngine {
         this.state.activeBuffs.push({ type: 'immunity_danger', duration: 1 })
         result.message = 'Bạn sẽ miễn nhiễm sự kiện nguy hiểm tiếp theo!'
         break
-      case 'preview_choices':
+      case 'preview_choices': {
         const previewEvent = this.getNextEvent()
         if (previewEvent) {
           result.message = 'Bạn nhìn thấy tương lai...'
@@ -478,6 +502,7 @@ export class GameEngine {
           result.message = 'Không thể nhìn thấy tương lai lúc này!'
         }
         break
+      }
       case 'undo_last_choice':
         if (this.previousSnapshot) {
           this.state = JSON.parse(JSON.stringify(this.previousSnapshot.state))

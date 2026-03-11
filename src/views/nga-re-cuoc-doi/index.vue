@@ -1,14 +1,23 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
-import * as DATA from './data'
+import {
+  loadGameData,
+  type GameDataJson,
+  type GameState,
+  type GameEvent,
+  type Choice,
+  type PassiveItem,
+  type ActiveSkill,
+} from './data'
 import { GameEngine } from './engine'
 
 const router = useRouter()
 const engine = new GameEngine()
 const currentScreen = ref('intro')
-const gameState = ref<DATA.GameState | null>(null)
-const currentEvent = ref<DATA.GameEvent | null>(null)
+const gameData = ref<GameDataJson | null>(null)
+const gameState = ref<GameState | null>(null)
+const currentEvent = ref<GameEvent | null>(null)
 const charNameInput = ref('')
 const selectedCareerId = ref('')
 const isShopOpen = ref(false)
@@ -16,7 +25,7 @@ const isInventoryOpen = ref(false)
 const isMenuOpen = ref(false)
 const toasts = ref<Array<{ id: number; message: string; type: string }>>([])
 const statChanges = ref<Record<string, number> | null>(null)
-const previewModalEvent = ref<DATA.GameEvent | null>(null)
+const previewModalEvent = ref<GameEvent | null>(null)
 const shopTab = ref('items')
 const inventoryTab = ref('inventory')
 const canvasRef = ref<HTMLCanvasElement | null>(null)
@@ -79,8 +88,8 @@ function openGallery() {
 }
 
 const careerPreview = computed(() => {
-  if (!selectedCareerId.value) return null
-  return DATA.CAREERS[selectedCareerId.value]
+  if (!selectedCareerId.value || !gameData.value) return null
+  return gameData.value.careers[selectedCareerId.value]
 })
 
 function showToast(message: string, type = 'info') {
@@ -91,7 +100,7 @@ function showToast(message: string, type = 'info') {
   }, 3000)
 }
 
-function startNewGame() {
+async function startNewGame() {
   if (!charNameInput.value.trim()) {
     showToast('Vui lòng nhập tên!', 'toast-negative')
     return
@@ -100,7 +109,7 @@ function startNewGame() {
     showToast('Vui lòng chọn nghề!', 'toast-negative')
     return
   }
-  gameState.value = engine.newGame(charNameInput.value, selectedCareerId.value)
+  gameState.value = (await engine.newGame(charNameInput.value, selectedCareerId.value))
     ? JSON.parse(JSON.stringify(engine.state))
     : null
   currentEvent.value = engine.getNextEvent()
@@ -109,7 +118,8 @@ function startNewGame() {
   window.scrollTo({ top: 0, behavior: 'instant' })
 }
 
-function loadGame() {
+async function loadGame() {
+  await engine.ensureData()
   const state = engine.loadGame()
   if (state) {
     gameState.value = JSON.parse(JSON.stringify(engine.state))
@@ -154,7 +164,7 @@ function triggerStatWarning(stat: string, message: string) {
   showToast(message, 'toast-negative')
 }
 
-function handleChoice(choice: DATA.Choice) {
+function handleChoice(choice: Choice) {
   const oldStats = gameState.value ? { ...gameState.value.stats } : null
 
   const result = engine.applyChoice(choice)
@@ -251,23 +261,23 @@ function restartGame() {
   }
 }
 
-function buyItemFn(item: DATA.PassiveItem) {
-  const result = engine.buyItem(item.id)
+async function buyItemFn(item: PassiveItem) {
+  const result = await engine.buyItem(item.id)
   gameState.value = JSON.parse(JSON.stringify(engine.state))
   showToast(result.message, result.success ? 'toast-info' : 'toast-negative')
 }
 
-function buySkillFn(skill: DATA.ActiveSkill) {
-  const result = engine.buySkill(skill.id)
+async function buySkillFn(skill: ActiveSkill) {
+  const result = await engine.buySkill(skill.id)
   gameState.value = JSON.parse(JSON.stringify(engine.state))
   showToast(result.message, result.success ? 'toast-info' : 'toast-negative')
 }
 
-function useSkillFn(skillId: string) {
-  const result = engine.useSkill(skillId)
+async function useSkillFn(skillId: string) {
+  const result = await engine.useSkill(skillId)
   if (result.success) {
     showToast(`⚡ ${result.message}`, 'toast-info')
-    const r = result as { isPreview?: boolean; previewEvent?: DATA.GameEvent }
+    const r = result as { isPreview?: boolean; previewEvent?: GameEvent }
     if (r.isPreview && r.previewEvent) {
       previewModalEvent.value = r.previewEvent
     } else {
@@ -400,14 +410,14 @@ function calculateEnding() {
   }
 }
 
-function canBuyItem(item: DATA.PassiveItem): boolean {
+function canBuyItem(item: PassiveItem): boolean {
   return (
     (gameState.value?.stats?.money ?? 0) >= item.cost &&
     !(gameState.value?.inventory ?? []).includes(item.id)
   )
 }
 
-function canBuySkill(skill: DATA.ActiveSkill): boolean {
+function canBuySkill(skill: ActiveSkill): boolean {
   return (
     (gameState.value?.stats?.money ?? 0) >= skill.cost &&
     !(gameState.value?.activeSkills ?? []).includes(skill.id)
@@ -522,6 +532,7 @@ function getMilestoneInfo(text: string) {
 }
 
 onMounted(() => {
+  loadGameData().then((d) => (gameData.value = d))
   initParticles()
   hasSavedGame.value = engine.hasSave()
   window.addEventListener('keydown', handleGlobalKeydown)
@@ -645,7 +656,7 @@ onUnmounted(() => {
               <label>Chọn ngành nghề khởi điểm</label>
               <div class="career-grid">
                 <div
-                  v-for="(career, id) in DATA.CAREERS"
+                  v-for="(career, id) in gameData?.careers ?? {}"
                   :key="String(id)"
                   class="career-card"
                   :class="{ selected: selectedCareerId === String(id) }"
@@ -888,7 +899,7 @@ onUnmounted(() => {
         </div>
         <div class="shop-content">
           <div v-show="shopTab === 'items'">
-            <div v-for="item in DATA.PASSIVE_ITEMS" :key="item.id" class="shop-item">
+            <div v-for="item in gameData?.passiveItems ?? []" :key="item.id" class="shop-item">
               <div class="shop-item-icon">{{ item.name.split(' ')[0] }}</div>
               <div class="shop-item-info">
                 <div class="shop-item-header">
@@ -907,7 +918,7 @@ onUnmounted(() => {
             </div>
           </div>
           <div v-show="shopTab === 'skills'">
-            <div v-for="skill in DATA.ACTIVE_SKILLS" :key="skill.id" class="shop-item">
+            <div v-for="skill in gameData?.activeSkills ?? []" :key="skill.id" class="shop-item">
               <div class="shop-item-icon">{{ skill.name.split(' ')[0] }}</div>
               <div class="shop-item-info">
                 <div class="shop-item-header">
@@ -968,18 +979,18 @@ onUnmounted(() => {
               class="inventory-item inventory-item-owned"
             >
               <div class="shop-item-icon">
-                {{ DATA.PASSIVE_ITEMS.find((i) => i.id === id)?.name?.split(' ')[0] }}
+                {{ gameData?.passiveItems.find((i) => i.id === id)?.name?.split(' ')[0] }}
               </div>
               <div class="shop-item-info">
                 <div class="shop-item-name">
                   {{
                     ((n) => (n ? n.substring(n.indexOf(' ') + 1) : ''))(
-                      DATA.PASSIVE_ITEMS.find((i) => i.id === id)?.name ?? '',
+                      gameData?.passiveItems.find((i) => i.id === id)?.name ?? '',
                     )
                   }}
                 </div>
                 <div class="shop-item-desc">
-                  {{ DATA.PASSIVE_ITEMS.find((i) => i.id === id)?.description }}
+                  {{ gameData?.passiveItems.find((i) => i.id === id)?.description }}
                 </div>
               </div>
             </div>
@@ -991,13 +1002,13 @@ onUnmounted(() => {
             </div>
             <div v-for="id in gameState?.activeSkills" :key="id" class="inventory-item">
               <div class="shop-item-icon">
-                {{ DATA.ACTIVE_SKILLS.find((s) => s.id === id)?.name?.split(' ')[0] }}
+                {{ gameData?.activeSkills.find((s) => s.id === id)?.name?.split(' ')[0] }}
               </div>
               <div class="shop-item-info">
                 <div class="shop-item-name">
                   {{
                     ((n) => (n ? n.substring(n.indexOf(' ') + 1) : ''))(
-                      DATA.ACTIVE_SKILLS.find((s) => s.id === id)?.name ?? '',
+                      gameData?.activeSkills.find((s) => s.id === id)?.name ?? '',
                     )
                   }}
                 </div>
